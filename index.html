@@ -1217,7 +1217,7 @@ const sync = {
 };
 /* общие настройки из config.js (window.VAC_SYNC_CONFIG) — дают включённый синхронизатор всем, кто открыл ссылку */
 function embeddedCfg(){ const c=window.VAC_SYNC_CONFIG||{}; return (c&&c.databaseURL)? {apiKey:c.apiKey||'',authDomain:c.authDomain||'',databaseURL:c.databaseURL,room:c.room||'default'}:null; }
-function resolveCfg(){ const ls=sync.cfg(); return (ls&&ls.databaseURL)?ls:embeddedCfg(); }
+function resolveCfg(){ const em=embeddedCfg(); return (em&&em.databaseURL)?em:sync.cfg(); }
 
 function setConn(state, text){
   const b=document.getElementById('connBadge'); b.classList.toggle('live', state==='live');
