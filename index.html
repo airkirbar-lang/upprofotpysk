@@ -1,3 +1,4 @@
+
 <!DOCTYPE html>
 <html lang="ru">
 <head>
@@ -1216,7 +1217,10 @@ const sync = {
   cfg(){ try{ return JSON.parse(localStorage.getItem(CFG_KEY)||'null'); }catch(e){ return null; } },
 };
 /* общие настройки из config.js (window.VAC_SYNC_CONFIG) — дают включённый синхронизатор всем, кто открыл ссылку */
-function embeddedCfg(){ const c=window.VAC_SYNC_CONFIG||{}; return (c&&c.databaseURL)? {apiKey:c.apiKey||'',authDomain:c.authDomain||'',databaseURL:c.databaseURL,room:c.room||'default'}:null; }
+function embeddedCfg(){ const c=window.VAC_SYNC_CONFIG||{}; if(c&&c.databaseURL) return {apiKey:c.apiKey||'',authDomain:c.authDomain||'',databaseURL:c.databaseURL,room:c.room||'default'};
+  // Запасной путь: параметры базы вписаны прямо сюда, если config.js почему-то не загрузился
+  const FALLBACK={apiKey:'AIzaSyDIg0kvEWNykhwtPK6ez2C7I_UivHvUBLk',authDomain:'grafikotpuska.firebaseapp.com',databaseURL:'https://grafikotpuska-default-rtdb.firebaseio.com',room:'default'};
+  return FALLBACK.databaseURL?FALLBACK:null; }
 function resolveCfg(){ const em=embeddedCfg(); return (em&&em.databaseURL)?em:sync.cfg(); }
 
 function setConn(state, text){
