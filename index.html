@@ -231,10 +231,25 @@
 </style>
 </head>
 <body>
+<script>
+/* Диагностический перехватчик: если JS где-то падает — показываем причину прямо на экране,
+   а не оставляем пустое тело. Это позволяет по скриншоту понять, живая ли сборка открылась. */
+window.addEventListener('error', function(ev){
+  try{
+    var m='⚠ Ошибка скрипта: '+((ev.message||ev.error&&ev.error.message)||'неизвестно');
+    var b=document.getElementById('errBanner');
+    if(!b){ b=document.createElement('div'); b.id='errBanner';
+      b.style.cssText='background:#fdecef;color:#d23f5a;padding:8px 22px;font:600 13px system-ui;border-bottom:1px solid #f3c1cd';
+      var h=document.querySelector('header'); if(h&&h.parentNode) h.parentNode.insertBefore(b,h); else document.body.insertBefore(b,document.body.firstChild);
+    }
+    b.textContent=m;
+  }catch(e){}
+});
+</script>
 <header>
   <div>
     <h1>📅 График отпусков Проектного Офиса</h1>
-    <div class="sub">Проектный офис — перетаскивайте полосы за центр или края, кликните для правки</div>
+    <div class="sub">Проектный офис — перетаскивайте полосы за центр или края, кликните для правки · <b id="buildTag" style="color:var(--accent2)">сборка v9-05.10</b></div>
   </div>
   <div class="spacer"></div>
   <span class="badge" id="connBadge" title="Статус синхронизации"><span class="live"></span><span id="connText">Локально</span></span>
