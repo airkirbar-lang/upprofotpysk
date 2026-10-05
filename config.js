@@ -33,5 +33,5 @@ window.VAC_SYNC_CONFIG = {
   apiKey:      'AIzaSyDIg0kvEWNykhwtPK6ez2C7I_UivHvUBLk',  // пример: 'AIzaSyD-xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx'
   authDomain:  'grafikotpuska.firebaseapp.com',  // пример: 'мой-проект.firebaseapp.com'
   databaseURL: 'https://grafikotpuska-default-rtdb.firebaseio.com',  // пример: 'https://мой-проект-default-rtdb.firebaseio.com'
-  room:        'profotpysk'  // идентификатор графика; менять не нужно
+  room:        'default'  // идентификатор графика; менять не нужно
 };
