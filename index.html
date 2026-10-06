@@ -249,7 +249,7 @@ window.addEventListener('error', function(ev){
 <header>
   <div>
     <h1>📅 График отпусков Проектного Офиса</h1>
-    <div class="sub">Проектный офис — перетаскивайте полосы за центр или края, кликните для правки · <b id="buildTag" style="color:var(--accent2)">сборка v11-06.10</b></div>
+    <div class="sub">Проектный офис — перетаскивайте полосы за центр или края, кликните для правки · <b id="buildTag" style="color:var(--accent2)">сборка v12-06.10</b></div>
   </div>
   <div class="spacer"></div>
   <span class="badge" id="connBadge" title="Статус синхронизации"><span class="live"></span><span id="connText">Локально</span></span>
@@ -281,6 +281,7 @@ window.addEventListener('error', function(ev){
   <div class="stat" id="stat"></div>
 </div>
 
+<div id="emptyState" role="status" style="display:none;padding:10px 22px;background:#e7ebf5;font-size:13px">Общий график пока пуст. Нажмите «＋ Отпуск», чтобы добавить запись. Для загрузки демонстрационных дат используйте «Сбросить к примеру».</div>
 <div class="scroll" id="scroll">
   <div class="grid" id="grid"></div>
 </div>
@@ -339,8 +340,8 @@ window.addEventListener('error', function(ev){
       <div class="field"><label>Database URL</label><input type="text" id="sDbUrl" placeholder="https://myapp-default-rtdb.firebaseio.com"></div>
       <div class="field"><label>Идентификатор комнаты (разные графики — разные значения)</label><input type="text" id="sRoom" placeholder="upside-dev-2027"></div>
       <div class="note">
-        Для теста установите в правилах БД:<br><code>{ "rules": { ".read": true, ".write": true } }</code><br>
-        Для продакшена ограничьте доступ по домену/токену.
+        Доступ к общему графику задаётся правилами Realtime Database.
+        Если появляется PERMISSION_DENIED, проверьте правила доступа. Имя выше служит подписью правок и не заменяет вход в аккаунт.
       </div>
     </details>
 
@@ -420,7 +421,7 @@ function whoName(){ return (LS.get(NAME_KEY)||'').trim()||'Я'; }
 
 /* ================= ХРАНЕНИЕ (local) ================= */
 function loadLocal(){
-  try{ const raw=LS.get(STORE_KEY); if(raw){ leaves=JSON.parse(raw); return; } }catch(e){}
+  try{ const raw=LS.get(STORE_KEY); if(raw){ const data=JSON.parse(raw); if(Array.isArray(data)){ leaves=hydrateLeaves(Object.fromEntries(data.filter(v=>v&&typeof v.id==='string').map(v=>[v.id,v]))); return; } } }catch(e){}
   leaves = SAMPLE.map((s,i)=>({id:'s'+i, ...s}));
 }
 function saveLocal(){ try{ LS.set(STORE_KEY, JSON.stringify(leaves)); }catch(e){} }
@@ -638,7 +639,7 @@ function drawBars(){
       const label=(w>58?fmt(it.l.start)+' – '+fmt(it.l.end):fmt(it.l.start))+(w>120&&it.l.note?' · '+it.l.note:'')+(clipped&&w<=58?'…':'');
       const remote = (it.l.updatedBy && it.l.updatedBy!==whoName());
       if(remote) bar.classList.add('remote');
-      bar.innerHTML='<span class="handle l"></span><span class="lbl">'+label+'</span><span class="handle r"></span><span class="flag" title="изменил: '+(it.l.updatedBy||'')+'"></span>';
+      bar.innerHTML='<span class="handle l"></span><span class="lbl">'+esc(label)+'</span><span class="handle r"></span><span class="flag" title="изменил: '+esc(it.l.updatedBy||'')+'"></span>';
       const cal=dur, wd=workdays(toDate(it.l.start),toDate(it.l.end));
       bar.title=nameFor(e.id)+'\n'+fmt(it.l.start)+' – '+fmt(it.l.end)+'\n'+cal+' к.д. / '+wd+' раб.\n'+(it.l.note||'')+(it.l.updatedBy?'\nизменил: '+it.l.updatedBy:'');
       track.appendChild(bar); attachDrag(bar,it.l);
@@ -681,6 +682,7 @@ function startDrag(ev, bar, leaf, mode){
 
 /* ================= СТАТИСТИКА / ЛЕНТА ================= */
 function updateStat(){
+  document.getElementById('emptyState').style.display=(sync.on&&!leaves.length)?'block':'none';
   const shown = filterEmp.size? leaves.filter(l=>filterEmp.has(l.emp)):leaves;
   const calTotal=shown.reduce((s,l)=>s+(diffDays(toDate(l.start),toDate(l.end))+1),0);
   const who = filterEmp.size? (filterEmp.size===1? nameFor([...filterEmp][0]):('выбрано '+filterEmp.size))+' · ':'';
@@ -809,6 +811,7 @@ document.getElementById('scroll').addEventListener('wheel',e=>{
 /* ---- правка отпуска по одному дню (вкладка «Календарь») ---- */
 function dayAdj(ds, delta){ return iso(addDays(toDate(ds), delta)); }
 function addOneDay(emp, ds){
+  if(sync.connecting){ toast("Дождитесь подключения общего графика"); return; }
   if(ds<PERIOD_FROM||ds>PERIOD_TO){ toast('Дата вне периода 2026–2030'); return; }
   const mine=leaves.filter(l=>l.emp===emp);
   const before=mine.find(l=>l.end===dayAdj(ds,-1));
@@ -821,6 +824,7 @@ function addOneDay(emp, ds){
   toast('День добавлен · '+ds.split('-').reverse().join('.'));
 }
 function removeOneDay(id, ds){
+  if(sync.connecting){ toast("Дождитесь подключения общего графика"); return; }
   const l=leaves.find(x=>x.id===id); if(!l) return;
   if(l.start===l.end){ leaves=leaves.filter(x=>x.id!==id); }
   else if(l.start===ds){ l.start=dayAdj(ds,1); }
@@ -1237,95 +1241,162 @@ function toast(msg){ const t=document.getElementById('toast'); t.textContent=msg
 
 /* ================= СИНХРОНИЗАЦИЯ (Firebase) ================= */
 const sync = {
-  on:false, db:null, app:null, refLeaves:null, refLog:null, refPresence:null,
-  clientId:uid(), busyRemote:false, unsubs:[],
+  on:false, connecting:false, db:null, app:null, refLeaves:null, refLog:null, refPresence:null,
+  clientId:uid(), busyRemote:false, unsubs:[], shadow:{}, generation:0,
   cfg(){ try{ return JSON.parse(LS.get(CFG_KEY)||'null'); }catch(e){ return null; } },
 };
-/* общие настройки из config.js (window.VAC_SYNC_CONFIG) — дают включённый синхронизатор всем, кто открыл ссылку */
-function embeddedCfg(){ const c=window.VAC_SYNC_CONFIG||{}; if(c&&c.databaseURL) return {apiKey:c.apiKey||'',authDomain:c.authDomain||'',databaseURL:c.databaseURL,room:c.room||'default'};
-  // Запасной путь: параметры базы вписаны прямо сюда, если config.js почему-то не загрузился
-  const FALLBACK={apiKey:'AIzaSyDIg0kvEWNykhwtPK6ez2C7I_UivHvUBLk',authDomain:'grafikotpuska.firebaseapp.com',databaseURL:'https://grafikotpuska-default-rtdb.firebaseio.com',room:'default'};
-  return FALLBACK.databaseURL?FALLBACK:null; }
-function resolveCfg(){ const em=embeddedCfg(); return (em&&em.databaseURL)?em:sync.cfg(); }
-
-function setConn(state, text){
-  const b=document.getElementById('connBadge'); b.classList.toggle('live', state==='live');
+function embeddedCfg(){ const c=window.VAC_SYNC_CONFIG; return c&&c.databaseURL?c:null; }
+function resolveCfg(){ return sync.cfg()||embeddedCfg(); }
+function setConn(state,text){
+  document.getElementById('connBadge').classList.toggle('live',state==='live');
   document.getElementById('connText').textContent=text;
-  document.getElementById('syncBtn').classList.toggle('on', state==='live');
-  document.getElementById('saveHint').textContent = state==='live'
+  document.getElementById('syncBtn').classList.toggle('on',state==='live');
+  document.getElementById('saveHint').textContent=state==='live'
     ? 'Общий график · правки видят все участники в реальном времени.'
+    : state==='pending' ? 'Подключаем общий график. Дождитесь загрузки перед редактированием.'
+    : sync.on ? 'Нет связи с базой. Правки ждут отправки; не закрывайте страницу.'
     : 'Изменения сохраняются в этом браузере автоматически. Нажмите «Синхронизация» для общего доступа.';
 }
-
-function loadScript(src){ return new Promise((res,rej)=>{ const s=document.createElement('script'); s.src=src; s.async=false; s.onload=()=>res(); s.onerror=()=>rej(new Error('не удалось загрузить '+src)); document.head.appendChild(s); }); }
-async function ensureFirebase(){
-  if(window.firebase && window.firebase.database) return true;
-  try{
-    await loadScript('https://www.gstatic.com/firebasejs/10.12.2/firebase-app-compat.js');
-    await loadScript('https://www.gstatic.com/firebasejs/10.12.2/firebase-database-compat.js');
-    return !!(window.firebase && window.firebase.database);
-  }catch(e){ return false; }
+function setConnecting(value){
+  sync.connecting=value; sync.busyRemote=value;
+  ['addBtn','mSave','mDelete','resetBtn','clearBtn'].forEach(id=>document.getElementById(id).disabled=value);
 }
-
-function leafToObj(l){ return {emp:l.emp,start:l.start,end:l.end,note:l.note||'',
-  updatedBy:l.updatedBy||whoName(), updated:l.updated||Date.now()}; }
+function loadScript(src){ return new Promise((res,rej)=>{
+  const s=document.createElement('script'); s.src=src; s.async=false;
+  s.onload=()=>res(); s.onerror=()=>{s.remove();rej(new Error('Не удалось загрузить '+src));};
+  document.head.appendChild(s);
+}); }
+let firebaseLoading=null;
+async function ensureFirebase(){
+  if(window.firebase&&window.firebase.database) return true;
+  if(!firebaseLoading) firebaseLoading=(async()=>{
+    try{
+      if(!window.firebase) await loadScript('https://www.gstatic.com/firebasejs/10.12.2/firebase-app-compat.js');
+      if(!window.firebase.database) await loadScript('https://www.gstatic.com/firebasejs/10.12.2/firebase-database-compat.js');
+      return !!window.firebase.database;
+    }catch(e){ return false; }
+  })();
+  const ok=await firebaseLoading; if(!ok) firebaseLoading=null; return ok;
+}
+function leafToObj(l){ return {emp:l.emp,start:l.start,end:l.end,note:l.note||'',updatedBy:l.updatedBy||'',updated:l.updated||0}; }
 function serializeLeaves(){ const o={}; leaves.forEach(l=>o[l.id]=leafToObj(l)); return o; }
-function hydrateLeaves(o){ const arr=[]; Object.keys(o||{}).forEach(id=>{ const v=o[id]; arr.push({id, emp:v.emp, start:v.start, end:v.end, note:v.note||'', updatedBy:v.updatedBy||'', updated:v.updated||0}); });
-  return arr.sort((a,b)=>EMPLOYEES.findIndex(e=>e.id===a.emp)-EMPLOYEES.findIndex(e=>e.id===b.emp)); }
-
+function hydrateLeaves(o){
+  return Object.entries(o||{}).filter(([id,v])=>v&&EMPLOYEES.some(e=>e.id===v.emp)&&
+    typeof v.start==='string'&&typeof v.end==='string'&&
+    /^\d{4}-\d{2}-\d{2}$/.test(v.start)&&/^\d{4}-\d{2}-\d{2}$/.test(v.end)&&
+    v.start>=PERIOD_FROM&&v.end<=PERIOD_TO&&v.start<=v.end&&
+    iso(toDate(v.start))===v.start&&iso(toDate(v.end))===v.end)
+    .map(([id,v])=>({id,...leafToObj({...v,note:String(v.note||''),updatedBy:String(v.updatedBy||'')})}))
+    .sort((a,b)=>EMPLOYEES.findIndex(e=>e.id===a.emp)-EMPLOYEES.findIndex(e=>e.id===b.emp));
+}
+function leafContent(l){ return JSON.stringify([l.emp,l.start,l.end,l.note||'']); }
 function writeUp(){
-  if(!sync.on) return;
-  sync.busyRemote=true;
-  sync.refLeaves.set(serializeLeaves()).catch(err=>{ toast('Ошибка записи: '+err.message); }).finally(()=>{ sync.busyRemote=false; });
+  if(!sync.on) return Promise.resolve(false);
+  const updates={};
+  leaves.forEach(l=>{
+    const old=sync.shadow[l.id];
+    if(!old||leafContent(old)!==leafContent(l)){
+      l.updatedBy=whoName(); l.updated=Date.now(); updates[l.id]=leafToObj(l);
+    }
+  });
+  const ids=new Set(leaves.map(l=>l.id));
+  Object.keys(sync.shadow).forEach(id=>{if(!ids.has(id)) updates[id]=null;});
+  if(!Object.keys(updates).length) return Promise.resolve(true);
+  const localCopy=JSON.stringify(leaves); saveLocal();
+  // update меняет только затронутые отпуска, сохраняя чужие записи.
+  return sync.refLeaves.update(updates).then(()=>true).catch(err=>{
+    LS.set(STORE_KEY+'_unsent',localCopy);
+    toast('Не удалось сохранить в общей базе: '+err.message+'. Копия правок сохранена в браузере.');
+    return false;
+  });
 }
 function pushLog(text){
   if(!sync.on) return;
-  sync.refLog.push({ts:firebase.database.ServerValue.TIMESTAMP, who:whoName(), text});
-  // trim до 30 последних
-  sync.refLog.orderByChild('ts').limitToFirst(200).once('value').then(sn=>{ const snap=sn.val(); if(!snap) return;
-    const keys=Object.keys(snap); if(keys.length>30){ const del=keys.slice(0,keys.length-30); const up={}; del.forEach(k=>up[k]=null); sync.refLog.update(up); } });
+  sync.refLog.push({ts:firebase.database.ServerValue.TIMESTAMP,who:whoName(),text})
+    .catch(err=>toast('Не удалось записать историю: '+err.message));
 }
 function commit(){ saveLocal(); writeUp(); render(); }
-function commitLog(text){ saveLocal(); writeUp(); if(sync.on) pushLog(text); render(); }
-
+function commitLog(text){
+  saveLocal(); if(sync.on) writeUp().then(ok=>{if(ok) pushLog(text);}); render();
+}
+function stopSync(){
+  ++sync.generation;
+  sync.unsubs.splice(0).forEach(off=>{try{off();}catch(e){}});
+  clearInterval(sync._hb);
+  if(sync.refPresence) sync.refPresence.child(sync.clientId).remove().catch(()=>{});
+  sync.on=false; sync.db=null; sync.refLeaves=sync.refLog=sync.refPresence=null;
+  sync.shadow={}; setConnecting(false);
+}
+function syncError(err){
+  const message=err&&err.message||String(err);
+  stopSync(); setConn('off',/permission.?denied/i.test(message)?'Нет доступа к Firebase':'Ошибка подключения');
+  renderOnline([]); renderFeed([]); render();
+  toast('Firebase: '+message);
+}
+function listen(ref,callback,token){
+  const cb=snapshot=>{if(token===sync.generation) callback(snapshot);};
+  ref.on('value',cb,err=>{if(token===sync.generation) syncError(err);});
+  sync.unsubs.push(()=>ref.off('value',cb));
+}
+function withTimeout(promise,ms){
+  let timer; return Promise.race([promise,new Promise((_,reject)=>{
+    timer=setTimeout(()=>reject(new Error('База не ответила за 15 секунд. Проверьте URL и сеть.')),ms);
+  })]).finally(()=>clearTimeout(timer));
+}
 async function connect(opts){
   opts=opts||{};
   const name=document.getElementById('sName').value.trim();
-  if(!name){ toast('Введите имя'); return; } LS.set(NAME_KEY,name);
-  let cfg={ apiKey:document.getElementById('sApiKey').value.trim(), authDomain:document.getElementById('sAuth').value.trim(),
-    databaseURL:document.getElementById('sDbUrl').value.trim(), room:document.getElementById('sRoom').value.trim()||'default' };
-  if(!cfg.databaseURL){ const em=embeddedCfg(); if(em) cfg=em; }
-  if(!cfg.databaseURL){ if(!opts.silent) toast('Укажите Database URL'); return; }
-  setConn('live','Подключение…');
+  if(!name){toast('Введите имя');return;}
+  const cfg={apiKey:document.getElementById('sApiKey').value.trim(),authDomain:document.getElementById('sAuth').value.trim(),
+    databaseURL:document.getElementById('sDbUrl').value.trim(),room:document.getElementById('sRoom').value.trim()||'default'};
+  if(!cfg.databaseURL){toast('Укажите Database URL');return;}
+  if(/[.#$\[\]/]/.test(cfg.room)){toast('В названии комнаты недопустимы . # $ [ ] /');return;}
+  try{if(new URL(cfg.databaseURL).protocol!=='https:') throw new Error();}
+  catch(e){toast('Database URL должен быть адресом https:// вашей Realtime Database');return;}
+  stopSync(); const token=sync.generation;
+  LS.set(NAME_KEY,name); setConnecting(true); setConn('pending','Подключение…');
   document.getElementById('syncOverlay').classList.remove('show');
-  LS.set(CFG_KEY, JSON.stringify(cfg));
-  const ok=await ensureFirebase();
-  if(!ok){ setConn('off','Нет сети для Firebase'); if(!opts.silent) toast('Firebase не загрузился — проверьте интернет и правила блокировщика'); return; }
   try{
-    sync.app = window.firebase.apps.length? window.firebase.apps[0] : window.firebase.initializeApp(cfg);
-    sync.db = window.firebase.database(sync.app);
-    const base = sync.db.ref('vacationGraphs/'+cfg.room);
-    sync.refLeaves = base.child('leaves');
-    sync.refLog = base.child('log');
-    sync.refPresence = base.child('presence');
-    sync.unsubs.forEach(u=>u()); sync.unsubs=[];
-    sync.unsubs.push(sync.refLeaves.on('value', sn=>{ const data=sn.val(); leaves = data? hydrateLeaves(data):[]; saveLocal(); sync.busyRemote=false; render(); }));
-    sync.unsubs.push(sync.refLog.on('value', sn=>{ renderFeed(sn.val()? Object.values(sn.val()).filter(x=>x&&x.text).sort((a,b)=>(a.ts||0)-(b.ts||0)) : []); }));
-    sync.unsubs.push(sync.refPresence.on('value', sn=>{ const p=sn.val()||{}; const now=Date.now(); const list=[];
-      Object.keys(p).forEach(id=>{ if(now-(p[id].hb||0)<45000 && p[id].name) list.push(p[id].name); });
-      renderOnline([...new Set(list)]); }));
-    // presence heartbeat
-    const me=sync.refPresence.child(sync.clientId); me.set({name:whoName(), hb:firebase.database.ServerValue.TIMESTAMP});
-    me.onDisconnect().remove();
-    clearInterval(sync._hb); sync._hb=setInterval(()=>me.set({name:whoName(), hb:firebase.database.ServerValue.TIMESTAMP}),20000);
-    sync.on=true; setConn('live','Общий график · '+cfg.room); if(!opts.silent) toast('Синхронизация включена — разошлитесь ссылкой');
-  }catch(e){ sync.on=false; setConn('off','Ошибка подключения'); toast('Ошибка: '+e.message); }
+    const ok=await withTimeout(ensureFirebase(),15000);
+    if(token!==sync.generation) return;
+    if(!ok) throw new Error('Firebase SDK не загрузился. Проверьте сеть и блокировщик.');
+    sync.app=window.firebase.apps.find(app=>app.options.databaseURL===cfg.databaseURL&&app.options.apiKey===cfg.apiKey)
+      ||window.firebase.initializeApp(cfg,'vacation-'+uid());
+    sync.db=window.firebase.database(sync.app,cfg.databaseURL);
+    const base=sync.db.ref('vacationGraphs/'+cfg.room);
+    sync.refLeaves=base.child('leaves'); sync.refLog=base.child('log'); sync.refPresence=base.child('presence');
+    // Проверяем фактический доступ до зелёного статуса и замены локального графика.
+    const first=await withTimeout(sync.refLeaves.once('value'),15000);
+    if(token!==sync.generation) return;
+    const me=sync.refPresence.child(sync.clientId);
+    await withTimeout(me.onDisconnect().remove(),15000);
+    await withTimeout(me.set({name:whoName(),hb:firebase.database.ServerValue.TIMESTAMP}),15000);
+    if(token!==sync.generation) return;
+    if(leaves.length) LS.set(STORE_KEY+'_before_sync',JSON.stringify(leaves));
+    LS.set(CFG_KEY,JSON.stringify(cfg)); sync.on=true;
+    leaves=hydrateLeaves(first.val()); sync.shadow=first.val()||{}; saveLocal(); render();
+    setConnecting(false); setConn('live','Общий график · '+cfg.room);
+    listen(sync.refLeaves,sn=>{
+      const data=sn.val(); leaves=hydrateLeaves(data); sync.shadow=data||{}; saveLocal(); render();
+    },token);
+    listen(sync.refLog.limitToLast(30),sn=>renderFeed(Object.values(sn.val()||{}).filter(x=>x&&x.text)
+      .sort((a,b)=>(a.ts||0)-(b.ts||0))),token);
+    listen(sync.refPresence,sn=>{
+      const now=Date.now(); renderOnline([...new Set(Object.values(sn.val()||{})
+        .filter(p=>p&&p.name&&now-(p.hb||0)<45000).map(p=>String(p.name)))]);
+    },token);
+    listen(sync.db.ref('.info/connected'),sn=>setConn(sn.val()?'live':'off',
+      sn.val()?'Общий график · '+cfg.room:'Нет связи с Firebase'),token);
+    if(token!==sync.generation) return;
+    sync._hb=setInterval(()=>me.set({name:whoName(),hb:firebase.database.ServerValue.TIMESTAMP})
+      .catch(err=>{if(token===sync.generation) syncError(err);}),20000);
+    if(!first.exists()) toast('Общий график пока пуст. Добавьте отпуска или нажмите «Сбросить к примеру».');
+    else if(!opts.silent) toast('Синхронизация включена');
+  }catch(err){if(token===sync.generation) syncError(err);}
 }
 function disconnect(){
-  sync.unsubs.forEach(u=>{ try{u();}catch(e){} }); sync.unsubs=[];
-  if(sync.clientId && sync.refPresence){ try{ sync.refPresence.child(sync.clientId).remove(); }catch(e){} }
-  clearInterval(sync._hb); sync.on=false; sync.db=null; sync.refLeaves=sync.refLog=sync.refPresence=null;
-  LS.del(CFG_KEY); setConn('off','Локально'); renderOnline([]); renderFeed([]); render();
+  stopSync(); LS.del(CFG_KEY); LS.set('iskra_vac_sync_disabled','1');
+  setConn('off','Локально'); renderOnline([]); renderFeed([]); render();
   toast('Отключено. Теперь правки только в этом браузере.');
 }
 
@@ -1335,21 +1406,21 @@ document.getElementById('syncBtn').onclick=()=>{
   document.getElementById('sName').value=LS.get(NAME_KEY)||'';
   if(cfg){ document.getElementById('sApiKey').value=cfg.apiKey||''; document.getElementById('sAuth').value=cfg.authDomain||'';
     document.getElementById('sDbUrl').value=cfg.databaseURL||''; document.getElementById('sRoom').value=cfg.room||''; }
-  document.getElementById('sDisconnect').style.display = sync.on? '':'none';
+  document.getElementById('sDisconnect').style.display = (sync.on||sync.connecting)? '':'none';
   ov.classList.add('show');
 };
 document.getElementById('sClose').onclick=()=>document.getElementById('syncOverlay').classList.remove('show');
-document.getElementById('sConnect').onclick=connect;
+document.getElementById('sConnect').onclick=()=>{ LS.del('iskra_vac_sync_disabled'); connect(); };
 document.getElementById('sDisconnect').onclick=()=>{ disconnect(); document.getElementById('syncOverlay').classList.remove('show'); };
 document.getElementById('syncOverlay').addEventListener('click',e=>{ if(e.target.id==='syncOverlay') e.currentTarget.classList.remove('show'); });
 
 /* ================= INIT ================= */
 loadLocal(); fillEmpSelect();
 if((location.hash||'').indexOf('cal')>=0){ viewMode='calendar'; }
-render(); setConn('off','Локально');
+refitZoom(); render(); setConn('off','Локально');
 markPreset(viewMode==='calendar'?0:activeSpanDays); updatePeriodLabel();
 // общий доступ: конфиг из config.js (window.VAC_SYNC_CONFIG) либо из сохранённой сессии браузера
-(function(){ const cfg=resolveCfg(); if(cfg && cfg.databaseURL){
+(function(){ const cfg=resolveCfg(); if(cfg && cfg.databaseURL && LS.get('iskra_vac_sync_disabled')!=='1'){
   const savedName=LS.get(NAME_KEY)||'';
   document.getElementById('sName').value=savedName;
   document.getElementById('sApiKey').value=cfg.apiKey||''; document.getElementById('sAuth').value=cfg.authDomain||'';
