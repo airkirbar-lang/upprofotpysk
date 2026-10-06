@@ -249,7 +249,7 @@ window.addEventListener('error', function(ev){
 <header>
   <div>
     <h1>📅 График отпусков Проектного Офиса</h1>
-    <div class="sub">Проектный офис — перетаскивайте полосы за центр или края, кликните для правки · <b id="buildTag" style="color:var(--accent2)">сборка v9-05.10</b></div>
+    <div class="sub">Проектный офис — перетаскивайте полосы за центр или края, кликните для правки · <b id="buildTag" style="color:var(--accent2)">сборка v11-06.10</b></div>
   </div>
   <div class="spacer"></div>
   <span class="badge" id="connBadge" title="Статус синхронизации"><span class="live"></span><span id="connText">Локально</span></span>
@@ -357,6 +357,16 @@ window.addEventListener('error', function(ev){
 <script src="config.js"></script>
 <script>
 /* ================= ДАННЫЕ ================= */
+/* Безопасный доступ к памяти браузера. Если localStorage заблокирован
+   (приватный режим / блокировщик / песочница) — НЕ роняем скрипт,
+   а тихо используем оперативную память страницы. */
+const LS=(function(){
+  try{ const x=window.localStorage; x.getItem('iskra_probe'); return {
+    get:k=>{try{return x.getItem(k)}catch(e){return null}},
+    set:(k,v)=>{try{x.setItem(k,v)}catch(e){}},
+    del:k=>{try{x.removeItem(k)}catch(e){}} }; }
+  catch(e){ const m={}; return { get:k=>(k in m?m[k]:null), set:(k,v)=>{m[k]=String(v)}, del:k=>{delete m[k]} }; }
+})();
 const EMPLOYEES = [
   {id:'anton',     name:'Антон',     color:'#af52de'},
   {id:'kristina',  name:'Кристина',  color:'#34c759'},
@@ -406,14 +416,14 @@ function buildMonths(){ const months=[]; let d=toDate(START_YEAR+'-01-01'); cons
   while(d<stop){ months.push(new Date(d)); d=new Date(Date.UTC(d.getUTCFullYear(), d.getUTCMonth()+1,1)); } return months; }
 const MONTHS = buildMonths();
 function uid(){ return 'l'+Date.now().toString(36)+Math.random().toString(36).slice(2,6); }
-function whoName(){ return (localStorage.getItem(NAME_KEY)||'').trim()||'Я'; }
+function whoName(){ return (LS.get(NAME_KEY)||'').trim()||'Я'; }
 
 /* ================= ХРАНЕНИЕ (local) ================= */
 function loadLocal(){
-  try{ const raw=localStorage.getItem(STORE_KEY); if(raw){ leaves=JSON.parse(raw); return; } }catch(e){}
+  try{ const raw=LS.get(STORE_KEY); if(raw){ leaves=JSON.parse(raw); return; } }catch(e){}
   leaves = SAMPLE.map((s,i)=>({id:'s'+i, ...s}));
 }
-function saveLocal(){ try{ localStorage.setItem(STORE_KEY, JSON.stringify(leaves)); }catch(e){} }
+function saveLocal(){ try{ LS.set(STORE_KEY, JSON.stringify(leaves)); }catch(e){} }
 
 /* ================= РЕНДЕР ================= */
 function colorFor(id){ const e=EMPLOYEES.find(x=>x.id===id); return e?e.color:'#5b8cff'; }
@@ -1229,7 +1239,7 @@ function toast(msg){ const t=document.getElementById('toast'); t.textContent=msg
 const sync = {
   on:false, db:null, app:null, refLeaves:null, refLog:null, refPresence:null,
   clientId:uid(), busyRemote:false, unsubs:[],
-  cfg(){ try{ return JSON.parse(localStorage.getItem(CFG_KEY)||'null'); }catch(e){ return null; } },
+  cfg(){ try{ return JSON.parse(LS.get(CFG_KEY)||'null'); }catch(e){ return null; } },
 };
 /* общие настройки из config.js (window.VAC_SYNC_CONFIG) — дают включённый синхронизатор всем, кто открыл ссылку */
 function embeddedCfg(){ const c=window.VAC_SYNC_CONFIG||{}; if(c&&c.databaseURL) return {apiKey:c.apiKey||'',authDomain:c.authDomain||'',databaseURL:c.databaseURL,room:c.room||'default'};
@@ -1278,18 +1288,19 @@ function pushLog(text){
 function commit(){ saveLocal(); writeUp(); render(); }
 function commitLog(text){ saveLocal(); writeUp(); if(sync.on) pushLog(text); render(); }
 
-async function connect(){
+async function connect(opts){
+  opts=opts||{};
   const name=document.getElementById('sName').value.trim();
-  if(!name){ toast('Введите имя'); return; } localStorage.setItem(NAME_KEY,name);
+  if(!name){ toast('Введите имя'); return; } LS.set(NAME_KEY,name);
   let cfg={ apiKey:document.getElementById('sApiKey').value.trim(), authDomain:document.getElementById('sAuth').value.trim(),
     databaseURL:document.getElementById('sDbUrl').value.trim(), room:document.getElementById('sRoom').value.trim()||'default' };
   if(!cfg.databaseURL){ const em=embeddedCfg(); if(em) cfg=em; }
-  if(!cfg.databaseURL){ toast('Укажите Database URL'); return; }
+  if(!cfg.databaseURL){ if(!opts.silent) toast('Укажите Database URL'); return; }
   setConn('live','Подключение…');
   document.getElementById('syncOverlay').classList.remove('show');
-  localStorage.setItem(CFG_KEY, JSON.stringify(cfg));
+  LS.set(CFG_KEY, JSON.stringify(cfg));
   const ok=await ensureFirebase();
-  if(!ok){ setConn('off','Нет сети для Firebase'); toast('Firebase не загрузился — проверьте интернет и правила блокировщика'); return; }
+  if(!ok){ setConn('off','Нет сети для Firebase'); if(!opts.silent) toast('Firebase не загрузился — проверьте интернет и правила блокировщика'); return; }
   try{
     sync.app = window.firebase.apps.length? window.firebase.apps[0] : window.firebase.initializeApp(cfg);
     sync.db = window.firebase.database(sync.app);
@@ -1307,21 +1318,21 @@ async function connect(){
     const me=sync.refPresence.child(sync.clientId); me.set({name:whoName(), hb:firebase.database.ServerValue.TIMESTAMP});
     me.onDisconnect().remove();
     clearInterval(sync._hb); sync._hb=setInterval(()=>me.set({name:whoName(), hb:firebase.database.ServerValue.TIMESTAMP}),20000);
-    sync.on=true; setConn('live','Общий график · '+cfg.room); toast('Синхронизация включена — разошлитесь ссылкой');
+    sync.on=true; setConn('live','Общий график · '+cfg.room); if(!opts.silent) toast('Синхронизация включена — разошлитесь ссылкой');
   }catch(e){ sync.on=false; setConn('off','Ошибка подключения'); toast('Ошибка: '+e.message); }
 }
 function disconnect(){
   sync.unsubs.forEach(u=>{ try{u();}catch(e){} }); sync.unsubs=[];
   if(sync.clientId && sync.refPresence){ try{ sync.refPresence.child(sync.clientId).remove(); }catch(e){} }
   clearInterval(sync._hb); sync.on=false; sync.db=null; sync.refLeaves=sync.refLog=sync.refPresence=null;
-  localStorage.removeItem(CFG_KEY); setConn('off','Локально'); renderOnline([]); renderFeed([]); render();
+  LS.del(CFG_KEY); setConn('off','Локально'); renderOnline([]); renderFeed([]); render();
   toast('Отключено. Теперь правки только в этом браузере.');
 }
 
 /* --- модалка синхронизации --- */
 document.getElementById('syncBtn').onclick=()=>{
   const cfg=resolveCfg(); const ov=document.getElementById('syncOverlay');
-  document.getElementById('sName').value=localStorage.getItem(NAME_KEY)||'';
+  document.getElementById('sName').value=LS.get(NAME_KEY)||'';
   if(cfg){ document.getElementById('sApiKey').value=cfg.apiKey||''; document.getElementById('sAuth').value=cfg.authDomain||'';
     document.getElementById('sDbUrl').value=cfg.databaseURL||''; document.getElementById('sRoom').value=cfg.room||''; }
   document.getElementById('sDisconnect').style.display = sync.on? '':'none';
@@ -1339,13 +1350,25 @@ render(); setConn('off','Локально');
 markPreset(viewMode==='calendar'?0:activeSpanDays); updatePeriodLabel();
 // общий доступ: конфиг из config.js (window.VAC_SYNC_CONFIG) либо из сохранённой сессии браузера
 (function(){ const cfg=resolveCfg(); if(cfg && cfg.databaseURL){
-  const savedName=localStorage.getItem(NAME_KEY)||'';
+  const savedName=LS.get(NAME_KEY)||'';
   document.getElementById('sName').value=savedName;
   document.getElementById('sApiKey').value=cfg.apiKey||''; document.getElementById('sAuth').value=cfg.authDomain||'';
   document.getElementById('sDbUrl').value=cfg.databaseURL||''; document.getElementById('sRoom').value=cfg.room||'';
-  if(savedName){ ensureFirebase().then(ok=>{ if(ok) connect(); }); }
-  else { document.getElementById('syncOverlay').classList.add('show'); toast('Откройте общий график: введите имя и нажмите «Подключить»'); }
+  // Авто-вход в общую комнату: не ждём имени и не перекрываем график модалкой.
+  // Имя подставляем из памяти, иначе гостевое — и сразу подключаемся.
+  const guest = savedName || ('Гость-' + Math.random().toString(36).slice(2,5).toUpperCase());
+  document.getElementById('sName').value = guest;
+  if(!savedName) LS.set(NAME_KEY, guest);
+  autoJoin();
 } })();
+// Подключение к общей базе без участия пользователя; при неудаче — тихо остаёмся локально.
+async function autoJoin(){
+  const cfg=resolveCfg(); if(!cfg || !cfg.databaseURL) return;
+  try{
+    const ok=await ensureFirebase(); if(!ok) return;
+    await connect({silent:true});
+  }catch(e){ /* молча: график уже нарисован локально */ }
+}
 window.addEventListener('beforeunload', ()=>{ if(sync.on && sync.refPresence){ try{ sync.refPresence.child(sync.clientId).remove(); }catch(e){} } });
 </script>
 </body>
